@@ -411,6 +411,373 @@ async function searchInterface() {
 	return html;
 }
 
+async function searchResultsPage() {
+	const html = `
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<title>镜像搜索结果 - Docker Hub 镜像搜索</title>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<style>
+		:root {
+			--primary-color: #0066ff;
+			--primary-dark: #0052cc;
+			--gradient-start: #1a90ff;
+			--gradient-end: #003eb3;
+			--text-color: #ffffff;
+			--transition-time: 0.3s;
+		}
+
+		* {
+			box-sizing: border-box;
+			margin: 0;
+			padding: 0;
+		}
+
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+			min-height: 100vh;
+			background: linear-gradient(135deg, var(--gradient-start) 0%, var(--gradient-end) 100%);
+			padding: 20px;
+			color: var(--text-color);
+		}
+
+		.container {
+			width: 100%;
+			max-width: 800px;
+			margin: 0 auto;
+		}
+
+		.header {
+			display: flex;
+			align-items: center;
+			gap: 15px;
+			margin-bottom: 25px;
+		}
+
+		.header .logo-link {
+			display: flex;
+			align-items: center;
+			flex-shrink: 0;
+		}
+
+		.search-container {
+			display: flex;
+			align-items: stretch;
+			flex: 1;
+			height: 45px;
+			box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+			border-radius: 12px;
+			overflow: hidden;
+		}
+
+		#search-input {
+			flex: 1;
+			padding: 0 20px;
+			font-size: 16px;
+			border: none;
+			outline: none;
+			height: 100%;
+			min-width: 0;
+		}
+
+		#search-button {
+			width: 55px;
+			background-color: var(--primary-color);
+			border: none;
+			cursor: pointer;
+			height: 100%;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			transition: background-color var(--transition-time) ease;
+		}
+
+		#search-button:hover {
+			background-color: var(--primary-dark);
+		}
+
+		#status {
+			text-align: center;
+			margin: 30px 0;
+			font-size: 1.05em;
+			color: rgba(255, 255, 255, 0.9);
+		}
+
+		.result-card {
+			background: rgba(255, 255, 255, 0.96);
+			color: #333;
+			border-radius: 12px;
+			padding: 16px 20px;
+			margin-bottom: 14px;
+			box-shadow: 0 4px 15px rgba(0, 0, 0, 0.12);
+			animation: fadeIn 0.4s ease-out;
+		}
+
+		@keyframes fadeIn {
+			from { opacity: 0; transform: translateY(10px); }
+			to { opacity: 1; transform: translateY(0); }
+		}
+
+		.result-title {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			flex-wrap: wrap;
+		}
+
+		.result-name {
+			font-size: 1.15em;
+			font-weight: 700;
+			color: var(--primary-dark);
+			word-break: break-all;
+		}
+
+		.badge {
+			background: var(--primary-color);
+			color: #fff;
+			font-size: 0.72em;
+			padding: 2px 8px;
+			border-radius: 10px;
+			white-space: nowrap;
+		}
+
+		.result-desc {
+			margin: 8px 0;
+			font-size: 0.92em;
+			color: #555;
+			line-height: 1.45;
+			word-break: break-word;
+		}
+
+		.result-meta {
+			font-size: 0.85em;
+			color: #888;
+			margin-bottom: 10px;
+		}
+
+		.pull-cmd {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			background: #f0f4fa;
+			border: 1px solid #dbe4f0;
+			border-radius: 8px;
+			padding: 8px 12px;
+			font-family: Consolas, Monaco, "Courier New", monospace;
+			font-size: 0.85em;
+			color: #1a3c6e;
+			cursor: pointer;
+			transition: background var(--transition-time) ease;
+			overflow-x: auto;
+			white-space: nowrap;
+		}
+
+		.pull-cmd:hover {
+			background: #e2ebf7;
+		}
+
+		.pull-cmd .copy-hint {
+			margin-left: auto;
+			color: #8aa4c4;
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+			flex-shrink: 0;
+		}
+
+		.pager {
+			display: flex;
+			justify-content: center;
+			align-items: center;
+			gap: 15px;
+			margin: 25px 0 10px;
+		}
+
+		.pager button {
+			background: rgba(255, 255, 255, 0.95);
+			color: var(--primary-dark);
+			border: none;
+			border-radius: 8px;
+			padding: 9px 22px;
+			font-size: 0.95em;
+			font-weight: 600;
+			cursor: pointer;
+			transition: transform var(--transition-time) ease;
+		}
+
+		.pager button:hover {
+			transform: translateY(-2px);
+		}
+
+		.pager button:disabled {
+			opacity: 0.45;
+			cursor: not-allowed;
+			transform: none;
+		}
+
+		@media (max-width: 480px) {
+			body {
+				padding: 12px;
+			}
+
+			.header {
+				gap: 10px;
+				margin-bottom: 18px;
+			}
+
+			.search-container {
+				height: 42px;
+			}
+
+			#search-input {
+				padding: 0 14px;
+				font-size: 15px;
+			}
+
+			#search-button {
+				width: 48px;
+			}
+		}
+		</style>
+	</head>
+	<body>
+		<div class="container">
+			<div class="header">
+				<a href="/" class="logo-link" title="返回首页">
+					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 18" fill="#ffffff" width="52" height="40">
+						<path d="M23.763 6.886c-.065-.053-.673-.512-1.954-.512-.32 0-.659.03-1.01.087-.248-1.703-1.651-2.533-1.716-2.57l-.345-.2-.227.328a4.596 4.596 0 0 0-.611 1.433c-.23.972-.09 1.884.403 2.666-.596.331-1.546.418-1.744.42H.752a.753.753 0 0 0-.75.749c-.007 1.456.233 2.864.692 4.07.545 1.43 1.355 2.483 2.409 3.13 1.181.725 3.104 1.14 5.276 1.14 1.016 0 2.03-.092 2.93-.266 1.417-.273 2.705-.742 3.826-1.391a10.497 10.497 0 0 0 2.61-2.14c1.252-1.42 1.998-3.005 2.553-4.408.075.003.148.005.221.005 1.371 0 2.215-.55 2.68-1.01.505-.5.685-.998.704-1.053L24 7.076l-.237-.19Z"></path>
+					</svg>
+				</a>
+				<div class="search-container">
+					<input type="text" id="search-input" placeholder="输入关键词搜索镜像...">
+					<button id="search-button" title="搜索">
+						<svg width="18" height="18" fill="none" stroke="#ffffff" stroke-width="2" viewBox="0 0 24 24">
+							<circle cx="11" cy="11" r="7"></circle>
+							<path d="M21 21l-4.35-4.35" stroke-linecap="round"></path>
+						</svg>
+					</button>
+				</div>
+			</div>
+			<div id="status">正在搜索...</div>
+			<div id="results"></div>
+			<div class="pager" id="pager" style="display:none">
+				<button id="prev-btn">上一页</button>
+				<button id="next-btn">下一页</button>
+			</div>
+		</div>
+		<script>
+		(function() {
+			var params = new URLSearchParams(location.search);
+			var query = params.get('q') || '';
+			var page = parseInt(params.get('page') || '1', 10);
+			if (isNaN(page) || page < 1) page = 1;
+			var pageSize = 25;
+			var statusEl = document.getElementById('status');
+			var resultsEl = document.getElementById('results');
+			var pagerEl = document.getElementById('pager');
+			var prevBtn = document.getElementById('prev-btn');
+			var nextBtn = document.getElementById('next-btn');
+			var input = document.getElementById('search-input');
+			input.value = query;
+
+			function goSearch(q, p) {
+				location.href = '/search?q=' + encodeURIComponent(q) + (p > 1 ? '&page=' + p : '');
+			}
+
+			document.getElementById('search-button').addEventListener('click', function() {
+				if (input.value.trim()) goSearch(input.value.trim(), 1);
+			});
+			input.addEventListener('keypress', function(e) {
+				if (e.key === 'Enter' && input.value.trim()) goSearch(input.value.trim(), 1);
+			});
+
+			function escapeHtml(s) {
+				return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+					return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+				});
+			}
+
+			function formatCount(n) {
+				if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+				if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+				if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+				return String(n);
+			}
+
+			function render(data) {
+				var results = data.results || [];
+				if (results.length === 0) {
+					statusEl.textContent = '未找到与 "' + query + '" 相关的镜像';
+					return;
+				}
+				statusEl.textContent = '共 ' + data.num_results + ' 个结果，第 ' + data.page + ' / ' + data.num_pages + ' 页';
+				var html = '';
+				for (var i = 0; i < results.length; i++) {
+					var r = results[i];
+					var name = escapeHtml(r.name);
+					var cmd = 'docker pull ' + location.host + '/' + name;
+					html += '<div class="result-card">'
+						+ '<div class="result-title"><span class="result-name">' + name + '</span>'
+						+ (r.is_official ? '<span class="badge">官方镜像</span>' : '')
+						+ '</div>'
+						+ (r.description ? '<div class="result-desc">' + escapeHtml(r.description) + '</div>' : '')
+						+ '<div class="result-meta">⭐ ' + formatCount(r.star_count || 0) + ' &nbsp;&nbsp; ⬇️ ' + formatCount(r.pull_count || 0) + '</div>'
+						+ '<div class="pull-cmd" data-cmd="' + escapeHtml(cmd) + '" title="点击复制"><span>' + escapeHtml(cmd) + '</span><span class="copy-hint">点击复制</span></div>'
+						+ '</div>';
+				}
+				resultsEl.innerHTML = html;
+				var cmds = resultsEl.querySelectorAll('.pull-cmd');
+				for (var j = 0; j < cmds.length; j++) {
+					cmds[j].addEventListener('click', function() {
+						var el = this;
+						var text = el.getAttribute('data-cmd');
+						function done() {
+							var hint = el.querySelector('.copy-hint');
+							hint.textContent = '已复制 ✓';
+							setTimeout(function() { hint.textContent = '点击复制'; }, 2000);
+						}
+						if (navigator.clipboard && navigator.clipboard.writeText) {
+							navigator.clipboard.writeText(text).then(done);
+						} else {
+							var ta = document.createElement('textarea');
+							ta.value = text;
+							document.body.appendChild(ta);
+							ta.select();
+							document.execCommand('copy');
+							document.body.removeChild(ta);
+							done();
+						}
+					});
+				}
+				pagerEl.style.display = 'flex';
+				prevBtn.disabled = page <= 1;
+				nextBtn.disabled = page >= data.num_pages;
+				prevBtn.onclick = function() { goSearch(query, page - 1); };
+				nextBtn.onclick = function() { goSearch(query, page + 1); };
+			}
+
+			if (!query) {
+				statusEl.textContent = '请输入关键词进行搜索';
+				return;
+			}
+
+			fetch('/v1/search?q=' + encodeURIComponent(query) + '&n=' + pageSize + '&page=' + page)
+				.then(function(res) {
+					if (!res.ok) throw new Error('HTTP ' + res.status);
+					return res.json();
+				})
+				.then(render)
+				.catch(function(err) {
+					statusEl.textContent = '搜索失败：' + err.message + '，请稍后重试';
+				});
+		})();
+		</script>
+	</body>
+	</html>
+	`;
+	return html;
+}
+
 export default {
 	async fetch(request, env, ctx) {
 		const getReqHeader = (key) => request.headers.get(key); // 获取请求头
@@ -472,6 +839,15 @@ export default {
 					});
 				}
 			} else {
+				// 搜索结果页：使用自建页面，数据走 index.docker.io 的 /v1/search 接口，
+				// 避免反代 hub.docker.com 搜索 API 时因 Workers 共享出口 IP 被限流（429 Rate limit exceeded）
+				if (fakePage && url.pathname == '/search') {
+					return new Response(await searchResultsPage(), {
+						headers: {
+							'Content-Type': 'text/html; charset=UTF-8',
+						},
+					});
+				}
 				// 新增逻辑：/v1/ 路径特殊处理
 				if (url.pathname.startsWith('/v1/')) {
 					url.hostname = 'index.docker.io';
