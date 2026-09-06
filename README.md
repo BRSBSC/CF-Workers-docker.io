@@ -146,6 +146,39 @@ crictl pull registry.k8s.io/kube-proxy:v1.28.4
 docker  pull nginx:1.21
 ```
 
+### 4. GHCR 公开镜像查询与加速
+
+首页输入 Docker Hub 关键词（如 `nginx`）仍使用 Docker Hub 搜索。输入完整 GHCR 地址则查询该公开镜像的标签，可翻页，也可指定标签或 SHA-256 摘要：
+
+```text
+ghcr.io/veildawn/ai-proxy-release
+ghcr.io/veildawn/ai-proxy-release:latest
+```
+
+结果中可复制代理拉取命令。GHCR 使用同一域名的 `ghcr.io/` 路径前缀，无需新增 DNS 或自定义域名。例如部署域名为 `docker.shaniao.top`：
+
+```shell
+docker pull docker.shaniao.top/ghcr.io/veildawn/ai-proxy-release:latest
+```
+
+将示例中的域名替换为自己的域名。指定摘要时使用 `域名/ghcr.io/所有者/镜像名@sha256:摘要`。
+
+兼容已有的 `ghcr.你的域名` 路由及 Containerd 的 `?ns=ghcr.io` 请求；新路径会保留所有者和镜像名，不添加 Docker Hub 的 `library/`。Worker 为 GHCR 获取独立的匿名拉取令牌，并中转 manifest 和 blob 下载。
+
+此功能是**完整地址精确查询**，不提供 GHCR 全站关键词搜索；仅支持公开镜像的查询和拉取，不支持私有镜像或推送。公开容器镜像可匿名访问，参见 [GitHub Container registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
+
+更新现有部署：将修改后的 `_worker.js` 完整替换到 Cloudflare Workers 编辑器并保存部署；Pages 则通过原有 Git 部署流程发布此版本。旧部署不会自动获得本地改动。
+
+本地验证（Node.js 22，无额外依赖）：
+
+```shell
+node --test tests/worker.test.mjs
+# Workers 运行时回归（首次运行下载 Cloudflare 官方 workerd）
+npm exec --yes --cache .wrangler/npm-cache --package=workerd@1.20260906.1 -- workerd test tests/workerd.capnp
+# 可选：连接真实 GHCR，验证公开标签、manifest、blob、摘要和 Range 下载
+node tests/ghcr-live.mjs
+```
+
 ## 🔧 变量说明
 
 | 变量名 | 示例 | 必填 | 备注 |

@@ -1,7 +1,7 @@
 // _worker.js
 
 // Docker镜像仓库主机地址
-let hub_host = 'registry-1.docker.io';
+const hub_host = 'registry-1.docker.io';
 // Docker认证服务器地址
 const auth_url = 'https://auth.docker.io';
 
@@ -95,12 +95,128 @@ async function nginx() {
 	return text;
 }
 
+const GHCR_REPOSITORY = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)+$/;
+const GHCR_REFERENCE = /^(?:[\w][\w.-]{0,127}|sha256:[a-f0-9]{64})$/;
+const MANIFEST_ACCEPT = 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json';
+
+function ghcrError(message, status) {
+	return Response.json({ error: message }, { status });
+}
+
+// Public, read-only GHCR access. Never forward Docker Hub credentials to GitHub.
+async function fetchGhcr(request, url) {
+	if (!['GET', 'HEAD'].includes(request.method)) {
+		return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD' } });
+	}
+	if (url.pathname === '/v2/' || url.pathname === '/v2') {
+		return new Response(request.method === 'HEAD' ? null : '{}', {
+			headers: { 'Docker-Distribution-Api-Version': 'registry/2.0', 'Content-Type': 'application/json' },
+		});
+	}
+	const match = url.pathname.match(/^\/v2\/(.+)\/(manifests\/([^/]+)|blobs\/(sha256:[a-f0-9]{64})|tags\/list)$/);
+	if (!match || match[1].length > 255 || !GHCR_REPOSITORY.test(match[1]) || (match[3] && !GHCR_REFERENCE.test(match[3]))) {
+		return ghcrError('无效的 GHCR 镜像路径', 400);
+	}
+	try {
+		const tokenUrl = new URL('https://ghcr.io/token');
+		tokenUrl.search = new URLSearchParams({ service: 'ghcr.io', scope: `repository:${match[1]}:pull` });
+		// workerd rejects redirect: 'error'; inspect redirects without following them.
+		const tokenResponse = await fetch(tokenUrl, { redirect: 'manual' });
+		if (tokenResponse.status >= 300 && tokenResponse.status < 400) {
+			await tokenResponse.body?.cancel();
+			return ghcrError('GHCR 认证服务返回了意外重定向，请稍后重试', 502);
+		}
+		if (!tokenResponse.ok) {
+			await tokenResponse.body?.cancel();
+			return ghcrError([401, 403, 404].includes(tokenResponse.status)
+				? '无法访问该 GHCR 镜像，请确认地址正确且镜像为公开可读'
+				: `GHCR 认证服务暂时不可用（HTTP ${tokenResponse.status}），请稍后重试`, tokenResponse.status);
+		}
+		const tokenData = await tokenResponse.json();
+		const token = tokenData.token || tokenData.access_token;
+		if (typeof token !== 'string' || !token) return ghcrError('GHCR 未返回有效令牌', 502);
+		const headers = new Headers({ Authorization: `Bearer ${token}` });
+		for (const key of ['Accept', 'Range', 'If-Range', 'If-None-Match', 'If-Modified-Since']) {
+			if (request.headers.has(key)) headers.set(key, request.headers.get(key));
+		}
+		if (!headers.has('Accept') || headers.get('Accept') === '*/*') headers.set('Accept', MANIFEST_ACCEPT);
+		let upstream = new URL(url.pathname, 'https://ghcr.io');
+		for (const key of ['n', 'last']) {
+			if (url.searchParams.has(key)) upstream.searchParams.set(key, url.searchParams.get(key));
+		}
+		for (let redirects = 0; redirects <= 3; redirects++) {
+			const response = await fetch(upstream, { method: request.method, headers, redirect: 'manual' });
+			if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+			const location = response.headers.get('Location');
+			await response.body?.cancel();
+			if (!location) return ghcrError('GHCR 返回了无效重定向', 502);
+			const target = new URL(location, upstream);
+			if (target.protocol !== 'https:' || target.port || target.username || target.password ||
+				!['ghcr.io', 'pkg-containers.githubusercontent.com'].includes(target.hostname)) {
+				return ghcrError('GHCR 返回了不支持的下载地址', 502);
+			}
+			if (target.origin !== upstream.origin) headers.delete('Authorization');
+			upstream = target;
+		}
+		return ghcrError('GHCR 重定向次数过多', 502);
+	} catch {
+		return ghcrError('GHCR 请求失败，请稍后重试', 502);
+	}
+}
+
+async function searchGhcr(url) {
+	const query = (url.searchParams.get('q') || '').trim().replace(/^https:\/\//i, '');
+	const match = query.match(/^ghcr\.io\/([^:@]+)(?::([\w][\w.-]{0,127})|@(sha256:[a-f0-9]{64}))?$/i);
+	if (!match || match[1].length > 255 || !GHCR_REPOSITORY.test(match[1])) {
+		return ghcrError('请输入完整地址：ghcr.io/所有者/镜像名，可附加 :标签 或 @sha256:摘要', 400);
+	}
+	const repo = match[1];
+	const reference = match[2] || match[3];
+	const upstream = new URL(`/v2/${repo}/${reference ? `manifests/${reference}` : 'tags/list'}`, 'https://ghcr.io');
+	if (!reference) {
+		upstream.searchParams.set('n', '25');
+		const last = url.searchParams.get('last');
+		if (last && !/^[\w][\w.-]{0,127}$/.test(last)) return ghcrError('无效的标签分页参数', 400);
+		if (last) upstream.searchParams.set('last', last);
+	}
+	const response = await fetchGhcr(new Request(upstream), upstream);
+	if (!response.ok) {
+		const failure = await response.json().catch(() => null);
+		const message = typeof failure?.error === 'string' ? failure.error :
+			([401, 403, 404].includes(response.status)
+				? `GHCR 查询失败（${response.status}），请确认镜像或标签存在且为公开可读`
+				: `GHCR 服务暂时不可用（HTTP ${response.status}），请稍后重试`);
+		return ghcrError(message, response.status);
+	}
+	let tags;
+	let nextLast = null;
+	if (reference) {
+		await response.body?.cancel();
+		tags = [reference];
+	} else {
+		const data = await response.json().catch(() => null);
+		if (!data || (data.tags != null && (!Array.isArray(data.tags) || data.tags.some(tag => typeof tag !== 'string' || !/^[\w][\w.-]{0,127}$/.test(tag))))) {
+			return ghcrError('GHCR 返回了无效的标签列表', 502);
+		}
+		tags = data.tags || [];
+		const next = response.headers.get('Link')?.match(/<([^>]+)>;\s*rel="?next"?/);
+		if (next) nextLast = new URL(next[1], upstream).searchParams.get('last');
+	}
+	return Response.json({
+		registry: 'ghcr.io', next_last: nextLast,
+		results: tags.map(tag => ({
+			name: `ghcr.io/${repo}${tag.startsWith('sha256:') ? '@' : ':'}${tag}`,
+			description: `GHCR 公开镜像 · ${tag.startsWith('sha256:') ? '摘要' : '标签'}：${tag}`,
+		})),
+	});
+}
+
 async function searchInterface() {
 	const html = `
 	<!DOCTYPE html>
 	<html>
 	<head>
-		<title>Docker Hub 镜像搜索</title>
+		<title>Docker Hub / GHCR 镜像查询</title>
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
 		<style>
@@ -373,10 +489,10 @@ async function searchInterface() {
 					<path d="M2.216 8.075h2.119a.186.186 0 0 0 .185-.186V6a.186.186 0 0 0-.185-.186H2.216A.186.186 0 0 0 2.031 6v1.89c0 .103.083.186.185.186Zm2.92 0h2.118a.185.185 0 0 0 .185-.186V6a.185.185 0 0 0-.185-.186H5.136A.185.185 0 0 0 4.95 6v1.89c0 .103.083.186.186.186Zm2.964 0h2.118a.186.186 0 0 0 .185-.186V6a.186.186 0 0 0-.185-.186H8.1A.185.185 0 0 0 7.914 6v1.89c0 .103.083.186.186.186Zm2.928 0h2.119a.185.185 0 0 0 .185-.186V6a.185.185 0 0 0-.185-.186h-2.119a.186.186 0 0 0-.185.186v1.89c0 .103.083.186.185.186Zm-5.892-2.72h2.118a.185.185 0 0 0 .185-.186V3.28a.186.186 0 0 0-.185-.186H5.136a.186.186 0 0 0-.186.186v1.89c0 .103.083.186.186.186Zm2.964 0h2.118a.186.186 0 0 0 .185-.186V3.28a.186.186 0 0 0-.185-.186H8.1a.186.186 0 0 0-.186.186v1.89c0 .103.083.186.186.186Zm2.928 0h2.119a.185.185 0 0 0 .185-.186V3.28a.186.186 0 0 0-.185-.186h-2.119a.186.186 0 0 0-.185.186v1.89c0 .103.083.186.185.186Zm0-2.72h2.119a.186.186 0 0 0 .185-.186V.56a.185.185 0 0 0-.185-.186h-2.119a.186.186 0 0 0-.185.186v1.89c0 .103.083.186.185.186Zm2.955 5.44h2.118a.185.185 0 0 0 .186-.186V6a.185.185 0 0 0-.186-.186h-2.118a.185.185 0 0 0-.185.186v1.89c0 .103.083.186.185.186Z"></path>
 				</svg>
 			</div>
-			<h1 class="title">Docker Hub 镜像搜索</h1>
-			<p class="subtitle">快速查找、下载和部署 Docker 容器镜像</p>
+			<h1 class="title">Docker Hub / GHCR 镜像查询</h1>
+			<p class="subtitle">关键词搜索 Docker Hub，完整 ghcr.io 地址查询公开镜像标签</p>
 			<div class="search-container">
-				<input type="text" id="search-input" placeholder="输入关键词搜索镜像，如: nginx, mysql, redis...">
+				<input type="text" id="search-input" placeholder="nginx 或 ghcr.io/owner/image">
 				<button id="search-button" title="搜索">
 					<svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
 						<path d="M13 5l7 7-7 7M5 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round"></path>
@@ -416,7 +532,7 @@ async function searchResultsPage() {
 	<!DOCTYPE html>
 	<html>
 	<head>
-		<title>镜像搜索结果 - Docker Hub 镜像搜索</title>
+		<title>镜像查询结果 - Docker Hub / GHCR</title>
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
 		<style>
@@ -649,7 +765,7 @@ async function searchResultsPage() {
 					</svg>
 				</a>
 				<div class="search-container">
-					<input type="text" id="search-input" placeholder="输入关键词搜索镜像...">
+					<input type="text" id="search-input" placeholder="Docker Hub 关键词或完整 ghcr.io 镜像地址">
 					<button id="search-button" title="搜索">
 						<svg width="18" height="18" fill="none" stroke="#ffffff" stroke-width="2" viewBox="0 0 24 24">
 							<circle cx="11" cy="11" r="7"></circle>
@@ -680,8 +796,8 @@ async function searchResultsPage() {
 			var input = document.getElementById('search-input');
 			input.value = query;
 
-			function goSearch(q, p) {
-				location.href = '/search?q=' + encodeURIComponent(q) + (p > 1 ? '&page=' + p : '');
+			function goSearch(q, p, last) {
+				location.href = '/search?q=' + encodeURIComponent(q) + (p > 1 ? '&page=' + p : '') + (last ? '&last=' + encodeURIComponent(last) : '');
 			}
 
 			document.getElementById('search-button').addEventListener('click', function() {
@@ -707,21 +823,21 @@ async function searchResultsPage() {
 			function render(data) {
 				var results = data.results || [];
 				if (results.length === 0) {
-					statusEl.textContent = '未找到与 "' + query + '" 相关的镜像';
+					statusEl.textContent = data.registry ? '该 GHCR 镜像没有可显示的标签' : '未找到与 "' + query + '" 相关的镜像';
 					return;
 				}
-				statusEl.textContent = '共 ' + data.num_results + ' 个结果，第 ' + data.page + ' / ' + data.num_pages + ' 页';
+				statusEl.textContent = data.registry ? 'GHCR 精确查询 · 本页 ' + results.length + ' 个标签 / 摘要' : '共 ' + data.num_results + ' 个结果，第 ' + data.page + ' / ' + data.num_pages + ' 页';
 				var html = '';
 				for (var i = 0; i < results.length; i++) {
 					var r = results[i];
 					var name = escapeHtml(r.name);
-					var cmd = 'docker pull ' + location.host + '/' + name;
+					var cmd = 'docker pull ' + location.host + '/' + r.name;
 					html += '<div class="result-card">'
 						+ '<div class="result-title"><span class="result-name">' + name + '</span>'
 						+ (r.is_official ? '<span class="badge">官方镜像</span>' : '')
 						+ '</div>'
 						+ (r.description ? '<div class="result-desc">' + escapeHtml(r.description) + '</div>' : '')
-						+ '<div class="result-meta">⭐ ' + formatCount(r.star_count || 0) + ' &nbsp;&nbsp; ⬇️ ' + formatCount(r.pull_count || 0) + '</div>'
+						+ (data.registry ? '' : '<div class="result-meta">⭐ ' + formatCount(r.star_count || 0) + ' &nbsp;&nbsp; ⬇️ ' + formatCount(r.pull_count || 0) + '</div>')
 						+ '<div class="pull-cmd" data-cmd="' + escapeHtml(cmd) + '" title="点击复制"><span>' + escapeHtml(cmd) + '</span><span class="copy-hint">点击复制</span></div>'
 						+ '</div>';
 				}
@@ -750,10 +866,11 @@ async function searchResultsPage() {
 					});
 				}
 				pagerEl.style.display = 'flex';
-				prevBtn.disabled = page <= 1;
-				nextBtn.disabled = page >= data.num_pages;
-				prevBtn.onclick = function() { goSearch(query, page - 1); };
-				nextBtn.onclick = function() { goSearch(query, page + 1); };
+				prevBtn.disabled = data.registry ? !params.get('last') : page <= 1;
+				prevBtn.textContent = data.registry ? '返回首页标签' : '上一页';
+				nextBtn.disabled = data.registry ? !data.next_last : page >= data.num_pages;
+				prevBtn.onclick = function() { goSearch(query, data.registry ? 1 : page - 1); };
+				nextBtn.onclick = function() { goSearch(query, page + 1, data.next_last); };
 			}
 
 			if (!query) {
@@ -761,9 +878,9 @@ async function searchResultsPage() {
 				return;
 			}
 
-			fetch('/v1/search?q=' + encodeURIComponent(query) + '&n=' + pageSize + '&page=' + page)
+			fetch('/v1/search?q=' + encodeURIComponent(query) + '&n=' + pageSize + '&page=' + page + '&last=' + encodeURIComponent(params.get('last') || ''))
 				.then(function(res) {
-					if (!res.ok) throw new Error('HTTP ' + res.status);
+					if (!res.ok) return res.json().catch(function() { return {}; }).then(function(data) { throw new Error(data.error || 'HTTP ' + res.status); });
 					return res.json();
 				})
 				.then(render)
@@ -783,6 +900,8 @@ export default {
 		const getReqHeader = (key) => request.headers.get(key); // 获取请求头
 
 		let url = new URL(request.url); // 解析请求URL
+		// Keep registry selection request-local so GHCR cannot affect later Docker Hub requests.
+		let hub_host = 'registry-1.docker.io';
 		const userAgentHeader = request.headers.get('User-Agent');
 		const userAgent = userAgentHeader ? userAgentHeader.toLowerCase() : "null";
 		if (env.UA) 屏蔽爬虫UA = 屏蔽爬虫UA.concat(await ADD(env.UA));
@@ -792,6 +911,16 @@ export default {
 		const ns = url.searchParams.get('ns');
 		const hostname = url.searchParams.get('hubhost') || url.hostname;
 		const hostTop = hostname.split('.')[0]; // 获取主机名的第一部分
+		if (url.pathname === '/v1/search' && /^(?:https:\/\/)?ghcr\.io(?:\/|$)/i.test((url.searchParams.get('q') || '').trim())) {
+			return searchGhcr(url);
+		}
+		if (url.pathname.startsWith('/v2/ghcr.io/')) {
+			url.pathname = url.pathname.replace('/v2/ghcr.io/', '/v2/');
+			return fetchGhcr(request, url);
+		}
+		if ((ns === 'ghcr.io' || (!ns && hostTop === 'ghcr')) && (url.pathname === '/v2' || url.pathname.startsWith('/v2/'))) {
+			return fetchGhcr(request, url);
+		}
 
 		let checkHost; // 在这里定义 checkHost 变量
 		// 如果存在 ns 参数，优先使用它来确定 hub_host
@@ -896,6 +1025,7 @@ export default {
 
 		// 新增：/v2/、/manifests/、/blobs/、/tags/ 先获取token再请求
 		if (
+			hub_host === 'registry-1.docker.io' && !request.headers.has('Authorization') &&
 			url.pathname.startsWith('/v2/') &&
 			(
 				url.pathname.includes('/manifests/') ||
