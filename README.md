@@ -1,4 +1,4 @@
-[**第三方 DockerHub 镜像服务列表**](https://github.com/cmliu/CF-Workers-docker.io?tab=readme-ov-file#%EF%B8%8F-%E7%AC%AC%E4%B8%89%E6%96%B9-dockerhub-%E9%95%9C%E5%83%8F%E6%9C%8D%E5%8A%A1)
+[**第三方 DockerHub 镜像服务列表**](#%EF%B8%8F-%E7%AC%AC%E4%B8%89%E6%96%B9-dockerhub-%E9%95%9C%E5%83%8F%E6%9C%8D%E5%8A%A1)
 
 ![CF-Workers-docker.io](./img.png)
 
@@ -26,8 +26,9 @@
 
 ## 🚀 部署方式
 
-- **Workers** 部署：复制 [_worker.js](https://github.com/cmliu/CF-Workers-docker.io/blob/main/_worker.js) 代码，`保存并部署`即可
+- **Workers** 部署：复制本仓库的 [_worker.js](./_worker.js) 代码，`保存并部署`即可
 - **Pages** 部署：`Fork` 后 `连接GitHub` 一键部署即可
+- **更新**：Workers 需把新的 `_worker.js` 完整替换到编辑器并重新部署；Pages 推送到 GitHub 后自动部署。旧部署不会自动获得新代码。
 
 ## ⚙️ 如何使用？ [视频教程](https://www.youtube.com/watch?v=l2jwq9CagNQ)
 
@@ -58,7 +59,7 @@ sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```
 
-### 遇到 429 Too Many Requests
+### 3. 遇到 429 Too Many Requests
 
 Docker Hub 按出口 IP 限制匿名拉取，而所有 Cloudflare Workers 共用同一个出口 IP，匿名额度基本一直是 0，匿名拉取 Docker Hub 镜像会返回 `429 toomanyrequests`。用自己的 Docker Hub 账号登录镜像站后，就按个人账号额度计算：
 
@@ -67,11 +68,11 @@ docker login docker.fxxk.dedyn.io
 docker pull docker.fxxk.dedyn.io/library/nginx:latest
 ```
 
-登录凭据会经过镜像站转发给 Docker Hub，建议使用只读权限的[访问令牌](https://app.docker.com/settings/personal-access-tokens)代替密码，且只登录你信任的镜像站。GHCR、quay.io、registry.k8s.io 等其他仓库不受此限制。
+登录凭据会经过镜像站转发给 Docker Hub，建议使用只读权限的[访问令牌](https://app.docker.com/settings/personal-access-tokens)代替密码，且只登录你信任的镜像站。按第 2 种 `registry-mirrors` 方式拉取 Docker Hub 镜像遇到 429 时，改用上面登录后带域名拉取的方式。GHCR、quay.io、registry.k8s.io 等其他仓库不受此限制。
 
-### 3. 配置常见仓库的镜像加速
+### 4. 配置常见仓库的镜像加速
 
-#### 3.1 配置
+#### 4.1 配置
 
 `Containerd` 较简单，它支持任意 `registry` 的 `mirror`，只需要修改配置文件 `/etc/containerd/config.toml`，添加如下的配置：
 
@@ -101,7 +102,6 @@ unqualified-search-registries = ['docker.io', 'k8s.gcr.io', 'gcr.io', 'ghcr.io',
 
 [[registry]]
 prefix = "docker.io"
-insecure = true
 location = "registry-1.docker.io"
 
 [[registry.mirror]]
@@ -109,7 +109,6 @@ location = "xxxx.xx.com"
 
 [[registry]]
 prefix = "registry.k8s.io"
-insecure = true
 location = "registry.k8s.io"
 
 [[registry.mirror]]
@@ -117,7 +116,6 @@ location = "xxxx.xx.com"
 
 [[registry]]
 prefix = "k8s.gcr.io"
-insecure = true
 location = "k8s.gcr.io"
 
 [[registry.mirror]]
@@ -125,7 +123,6 @@ location = "xxxx.xx.com"
 
 [[registry]]
 prefix = "gcr.io"
-insecure = true
 location = "gcr.io"
 
 [[registry.mirror]]
@@ -133,7 +130,6 @@ location = "xxxx.xx.com"
 
 [[registry]]
 prefix = "ghcr.io"
-insecure = true
 location = "ghcr.io"
 
 [[registry.mirror]]
@@ -141,7 +137,6 @@ location = "xxxx.xx.com"
 
 [[registry]]
 prefix = "quay.io"
-insecure = true
 location = "quay.io"
 
 [[registry.mirror]]
@@ -149,7 +144,7 @@ location = "xxxx.xx.com"
 
 ```
 
-#### 3.3 使用
+#### 4.2 使用
 
 对于以上配置，k8s 在使用的时候，就可以直接 `pull` 外部无法 pull 的镜像了。
 
@@ -159,7 +154,7 @@ crictl pull registry.k8s.io/kube-proxy:v1.28.4
 docker  pull nginx:1.21
 ```
 
-### 4. GHCR 公开镜像查询与加速
+### 5. GHCR 公开镜像查询与加速
 
 首页输入 Docker Hub 关键词（如 `nginx`）仍使用 Docker Hub 搜索。输入完整 GHCR 地址则查询该公开镜像的标签，可翻页，也可指定标签或 SHA-256 摘要：
 
@@ -180,9 +175,17 @@ docker pull docker.shaniao.top/ghcr.io/veildawn/ai-proxy-release:latest
 
 此功能是**完整地址精确查询**，不提供 GHCR 全站关键词搜索；仅支持公开镜像的查询和拉取，不支持私有镜像或推送。公开容器镜像可匿名访问，参见 [GitHub Container registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
 
-更新现有部署：将修改后的 `_worker.js` 完整替换到 Cloudflare Workers 编辑器并保存部署；Pages 则通过原有 Git 部署流程发布此版本。旧部署不会自动获得本地改动。
+## 🔧 变量说明
 
-本地验证（Node.js 22，无额外依赖）：
+| 变量名 | 示例 | 必填 | 备注 |
+|--|--|--|--|
+| URL302 | `https://t.me/CMLiussss` |❌| 主页302跳转 |
+| URL | `https://www.baidu.com/` |❌| 主页伪装(设为`nginx`则伪装为nginx默认页面) |
+| UA | `netcraft` |❌| 支持多元素, 元素之间使用空格或换行作间隔，不区分大小写 |
+
+## 🧪 本地测试
+
+需要 Node.js 22 及以上，无额外依赖。`tests/worker.test.mjs` 覆盖 Docker Hub 路由与认证、`ns` 白名单、UA 屏蔽、GHCR 查询与拉取，上游请求全部用 mock，不访问网络：
 
 ```shell
 node --test tests/worker.test.mjs
@@ -191,14 +194,6 @@ npm exec --yes --cache .wrangler/npm-cache --package=workerd@1.20260906.1 -- wor
 # 可选：连接真实 GHCR，验证公开标签、manifest、blob、摘要和 Range 下载
 node tests/ghcr-live.mjs
 ```
-
-## 🔧 变量说明
-
-| 变量名 | 示例 | 必填 | 备注 |
-|--|--|--|--|
-| URL302 | `https://t.me/CMLiussss` |❌| 主页302跳转 |
-| URL | `https://www.baidu.com/` |❌| 主页伪装(设为`nginx`则伪装为nginx默认页面) |
-| UA | `netcraft` |❌| 支持多元素, 元素之间使用空格或换行作间隔，不区分大小写 |
 
 # 🛠️ 第三方 DockerHub 镜像服务
 
