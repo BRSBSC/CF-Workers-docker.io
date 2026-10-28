@@ -26,10 +26,36 @@
 
 ## 🚀 部署方式
 
-- **Workers** 部署：复制本仓库的 [_worker.js](./_worker.js) 代码，`保存并部署`即可
-- **Workers 关联 GitHub** 部署：构建会执行 `npx wrangler deploy`，读取仓库里的 [wrangler.jsonc](./wrangler.jsonc)。其中 `name` 必须与控制台里的 Worker 名称一致，`Fork` 后请改成你自己的名称
-- **Pages** 部署：`Fork` 后 `连接GitHub` 一键部署即可
-- **更新**：Workers 需把新的 `_worker.js` 完整替换到编辑器并重新部署；Pages 推送到 GitHub 后自动部署。旧部署不会自动获得新代码。
+以下步骤依据 [Cloudflare 官方文档](https://developers.cloudflare.com/workers/)，按钮名称以控制台英文界面为准。三种方式任选其一：
+
+### 方式一：Workers 关联 GitHub（推荐，推送后自动部署）
+
+1. `Fork` 本仓库，把 [wrangler.jsonc](./wrangler.jsonc) 里的 `name` 改成你要用的 Worker 名称。
+2. Cloudflare 控制台进入 **Workers & Pages** → **Create application**，选择 **GitHub**，授权后选中你 Fork 的仓库。
+3. 项目名称填写与 `wrangler.jsonc` 中 `name` 完全相同的值（[不一致会构建失败](https://developers.cloudflare.com/workers/ci-cd/builds/troubleshoot/#workers-name-requirement)），部署命令保持默认的 `npx wrangler deploy`，点击 **Save and Deploy**。
+4. 已有的 Worker 可以在 **Settings** → **Builds** → **Connect** 关联仓库。之后每次推送都会自动构建并部署。
+
+`wrangler.jsonc` 中设置了 `keep_vars: true`，在控制台配置的环境变量不会被部署覆盖。
+
+### 方式二：Workers 控制台粘贴代码
+
+1. **Workers & Pages** → **Create application**，用 Hello World 模板创建一个 Worker 并点击 **Deploy**。
+2. 打开这个 Worker，点击 **Edit code**，用本仓库 [_worker.js](./_worker.js) 的全部内容替换编辑器中的代码，再点击 **Deploy**。
+3. 更新时重复第 2 步，旧部署不会自动获得新代码。
+
+### 方式三：Pages 关联 GitHub
+
+1. `Fork` 本仓库。
+2. **Workers & Pages** → **Create application** → **Pages** → **Connect to Git**，选中仓库后点击 **Begin setup**。
+3. **Framework preset** 选 `None`，**Build command** 留空，**Build output directory** 保持默认，点击 **Save and Deploy**。仓库根目录的 `_worker.js` 会以 [Advanced mode](https://developers.cloudflare.com/pages/functions/advanced-mode/) 运行。
+4. 之后每次推送都会自动部署。
+
+### 绑定自定义域名
+
+域名需要已经托管在 Cloudflare（处于 Active 状态）：
+
+- **Worker**：打开 Worker → **Settings** → **Domains & Routes** → **Add** → **Custom Domain**，输入域名后点击 **Add Custom Domain**，Cloudflare 会自动创建 DNS 记录。该主机名不能已经存在 CNAME 记录。参见 [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。
+- **Pages**：打开项目 → **Custom domains** → **Set up a domain**，输入域名后点击 **Continue**。参见 [Pages 自定义域名](https://developers.cloudflare.com/pages/configuration/custom-domains/)。
 
 ## ⚙️ 如何使用？ [视频教程](https://www.youtube.com/watch?v=l2jwq9CagNQ)
 
@@ -47,112 +73,100 @@ docker pull docker.fxxk.dedyn.io/library/nginx:stable-alpine3.19-perl
 
 ### 2.一键设置镜像加速
 
-修改文件 `/etc/docker/daemon.json`（如果不存在则创建）
+修改文件 `/etc/docker/daemon.json`（如果不存在则创建），把域名替换为你自己的域名。JSON 文件里不能写注释：
 
 ```shell
 sudo mkdir -p /etc/docker
 sudo tee /etc/docker/daemon.json <<-'EOF'
 {
-  "registry-mirrors": ["https://docker.fxxk.dedyn.io"]  # 请替换为您自己的Worker自定义域名
+  "registry-mirrors": ["https://docker.fxxk.dedyn.io"]
 }
 EOF
-sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```
 
+按 [Docker 官方说明](https://docs.docker.com/docker-hub/image-library/mirror/)，`registry-mirrors` 只对 Docker Hub 镜像生效，其他仓库请用第 4 节的方式。
+
 ### 3. 遇到 429 Too Many Requests
 
-Docker Hub 按出口 IP 限制匿名拉取，而所有 Cloudflare Workers 共用同一个出口 IP，匿名额度基本一直是 0，匿名拉取 Docker Hub 镜像会返回 `429 toomanyrequests`。用自己的 Docker Hub 账号登录镜像站后，就按个人账号额度计算：
+按 [Docker Hub 官方限额](https://docs.docker.com/docker-hub/usage/pulls/)，未登录的拉取按 IPv4 地址或 IPv6 /64 子网计算额度，登录的个人账号按账号计算、额度更高。实测 Workers 访问 Docker Hub 时使用 Cloudflare 共用的 IPv6 出口（`2a06:98c0:3600::`），所有 Workers 共享同一份匿名额度，基本一直是 0，所以匿名拉取 Docker Hub 镜像会返回 `429 toomanyrequests`。
+
+用自己的 Docker Hub 账号登录镜像站后，就按个人账号额度计算：
 
 ```shell
 docker login docker.fxxk.dedyn.io
 docker pull docker.fxxk.dedyn.io/library/nginx:latest
 ```
 
-登录凭据会经过镜像站转发给 Docker Hub，建议使用只读权限的[访问令牌](https://app.docker.com/settings/personal-access-tokens)代替密码，且只登录你信任的镜像站。按第 2 种 `registry-mirrors` 方式拉取 Docker Hub 镜像遇到 429 时，改用上面登录后带域名拉取的方式。GHCR、quay.io、registry.k8s.io 等其他仓库不受此限制。
+登录凭据会经过镜像站转发给 Docker Hub，建议用只读权限的[个人访问令牌（PAT）](https://docs.docker.com/security/access-tokens/)代替密码（开启两步验证的账号必须用 PAT），并且只登录你信任的镜像站。用第 2 种 `registry-mirrors` 方式拉取 Docker Hub 镜像遇到 429 时，改用上面登录后带域名拉取的方式。GHCR、quay.io、registry.k8s.io 等其他仓库不受此限制。
 
 ### 4. 配置常见仓库的镜像加速
 
-#### 4.1 配置
+#### 4.1 Containerd（Kubernetes）
 
-`Containerd` 较简单，它支持任意 `registry` 的 `mirror`，只需要修改配置文件 `/etc/containerd/config.toml`，添加如下的配置：
+[containerd 官方文档](https://github.com/containerd/containerd/blob/main/docs/hosts.md)已将 `config.toml` 中 `registry.mirrors` 的写法标记为 DEPRECATED，推荐使用 `config_path` + `hosts.toml`。
 
-```yaml
-    [plugins."io.containerd.grpc.v1.cri".registry]
-      [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
-        [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
-          endpoint = ["https://xxxx.xx.com"]
-        [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.k8s.io"]
-          endpoint = ["https://xxxx.xx.com"]
-        [plugins."io.containerd.grpc.v1.cri".registry.mirrors."k8s.gcr.io"]
-          endpoint = ["https://xxxx.xx.com"]
-        [plugins."io.containerd.grpc.v1.cri".registry.mirrors."gcr.io"]
-          endpoint = ["https://xxxx.xx.com"]
-        [plugins."io.containerd.grpc.v1.cri".registry.mirrors."ghcr.io"]
-          endpoint = ["https://xxxx.xx.com"]
-        [plugins."io.containerd.grpc.v1.cri".registry.mirrors."quay.io"]
-          endpoint = ["https://xxxx.xx.com"]
+第一步，确认 `/etc/containerd/config.toml` 中设置了 `config_path`，改完后执行 `sudo systemctl restart containerd`：
+
+```toml
+# containerd 2.x（配置文件 version = 3）
+[plugins."io.containerd.cri.v1.images".registry]
+   config_path = "/etc/containerd/certs.d"
+
+# containerd 1.x（配置文件 version = 2）
+[plugins."io.containerd.grpc.v1.cri".registry]
+   config_path = "/etc/containerd/certs.d"
 ```
 
-> Containerd 会在请求上带 `?ns=上游仓库`。为防止 Worker 被当成开放代理，`ns` 只接受 `docker.io` 和 `_worker.js` 中 `ROUTES` 路由表里的上游（quay.io、gcr.io、k8s.gcr.io、registry.k8s.io、ghcr.io、docker.cloudsmith.io、nvcr.io），其他值返回 400。需要别的仓库时，在 `ROUTES` 里加一行即可。
+第二步，为每个要加速的仓库生成 `hosts.toml`，把 `MIRROR` 替换为你的域名。`server` 是镜像站不可用时回退的上游；按官方文档，修改 `certs.d` 目录下的文件不需要重启 containerd：
 
-`Podman` 同样支持任意 `registry` 的 `mirror`，修改配置文件 `/etc/containers/registries.conf`，添加配置：
+```shell
+MIRROR=docker.fxxk.dedyn.io
+for reg in docker.io registry.k8s.io k8s.gcr.io gcr.io ghcr.io quay.io; do
+  server="https://$reg"; [ "$reg" = docker.io ] && server="https://registry-1.docker.io"
+  sudo mkdir -p /etc/containerd/certs.d/$reg
+  sudo tee /etc/containerd/certs.d/$reg/hosts.toml >/dev/null <<EOF
+server = "$server"
 
-```yaml
-unqualified-search-registries = ['docker.io', 'k8s.gcr.io', 'gcr.io', 'ghcr.io', 'quay.io']
+[host."https://$MIRROR"]
+  capabilities = ["pull", "resolve"]
+EOF
+done
+```
+
+containerd 请求镜像站时会带上 `?ns=原仓库`，Worker 据此选择上游，所以同一个域名可以加速以上所有仓库。为防止 Worker 被当成开放代理，`ns` 只接受 `docker.io` 和 `_worker.js` 中 `ROUTES` 路由表里的上游（quay.io、gcr.io、k8s.gcr.io、registry.k8s.io、ghcr.io、docker.cloudsmith.io、nvcr.io），其他值返回 400。需要别的仓库时，在 `ROUTES` 里加一行即可。
+
+#### 4.2 Podman
+
+修改 `/etc/containers/registries.conf`，格式见 [containers-registries.conf(5)](https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md)：
+
+```toml
+unqualified-search-registries = ["docker.io"]
 
 [[registry]]
 prefix = "docker.io"
 location = "registry-1.docker.io"
 
 [[registry.mirror]]
-location = "xxxx.xx.com"
-
-[[registry]]
-prefix = "registry.k8s.io"
-location = "registry.k8s.io"
-
-[[registry.mirror]]
-location = "xxxx.xx.com"
-
-[[registry]]
-prefix = "k8s.gcr.io"
-location = "k8s.gcr.io"
-
-[[registry.mirror]]
-location = "xxxx.xx.com"
-
-[[registry]]
-prefix = "gcr.io"
-location = "gcr.io"
-
-[[registry.mirror]]
-location = "xxxx.xx.com"
+location = "docker.fxxk.dedyn.io"
 
 [[registry]]
 prefix = "ghcr.io"
 location = "ghcr.io"
 
 [[registry.mirror]]
-location = "xxxx.xx.com"
-
-[[registry]]
-prefix = "quay.io"
-location = "quay.io"
-
-[[registry.mirror]]
-location = "xxxx.xx.com"
-
+location = "docker.fxxk.dedyn.io/ghcr.io"
 ```
 
-#### 4.2 使用
+Podman 会把镜像地址直接改写成镜像站地址再拉取，不会像 containerd 那样附带 `ns`，Worker 无从知道原仓库是哪个。所以同一个域名只能加速 Docker Hub，以及通过 `域名/ghcr.io` 路径加速 GHCR。quay.io、registry.k8s.io 等其他仓库需要给 Worker 绑定对应前缀的子域名（如 `quay.你的域名`、`k8s.你的域名`，前缀见 `ROUTES`），再把 mirror 的 `location` 填成该子域名。这就是上方警告中提到的「根据主机名选择对应的上游地址」方式，请注意其中的风险。
 
-对于以上配置，k8s 在使用的时候，就可以直接 `pull` 外部无法 pull 的镜像了。
+#### 4.3 使用
+
+配置完成后照常拉取，会自动经过镜像站：
 
 ```shell
-# 手动可以直接pull配置了mirror的仓库
 crictl pull registry.k8s.io/kube-proxy:v1.28.4
-docker  pull nginx:1.21
+podman pull ghcr.io/veildawn/ai-proxy-release:latest
 ```
 
 ### 5. GHCR 公开镜像查询与加速
@@ -183,6 +197,11 @@ docker pull docker.shaniao.top/ghcr.io/veildawn/ai-proxy-release:latest
 | URL302 | `https://t.me/CMLiussss` |❌| 主页302跳转 |
 | URL | `https://www.baidu.com/` |❌| 主页伪装(设为`nginx`则伪装为nginx默认页面) |
 | UA | `netcraft` |❌| 支持多元素, 元素之间使用空格或换行作间隔，不区分大小写 |
+
+设置方法（参见 [Workers 环境变量](https://developers.cloudflare.com/workers/configuration/environment-variables/)）：
+
+- **Workers**：打开 Worker → **Settings** → **Variables and Secrets** → **Add**，类型选文本，填写名称和值后点击 **Deploy**。
+- **Pages**：打开项目 → **Settings** → **Variables and Secrets** → **Add**，填写后点击 **Save**，再重新部署一次使其生效。
 
 ## 🧪 本地测试
 
