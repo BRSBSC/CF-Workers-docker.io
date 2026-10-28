@@ -1,6 +1,6 @@
 {
 	// 必须与 Cloudflare 控制台里的 Worker 名称一致，否则 Workers Builds 构建失败
-	"name": "cf-workers-docker-io",
+	"name": "docker",
 	"main": "_worker.js",
 	"compatibility_date": "2024-09-23",
 	// 保留在控制台配置的 URL302 / URL / UA 变量，否则每次部署都会被清空
