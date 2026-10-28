@@ -27,6 +27,7 @@
 ## 🚀 部署方式
 
 - **Workers** 部署：复制本仓库的 [_worker.js](./_worker.js) 代码，`保存并部署`即可
+- **Workers 关联 GitHub** 部署：构建会执行 `npx wrangler deploy`，读取仓库里的 [wrangler.jsonc](./wrangler.jsonc)。其中 `name` 必须与控制台里的 Worker 名称一致，`Fork` 后请改成你自己的名称
 - **Pages** 部署：`Fork` 后 `连接GitHub` 一键部署即可
 - **更新**：Workers 需把新的 `_worker.js` 完整替换到编辑器并重新部署；Pages 推送到 GitHub 后自动部署。旧部署不会自动获得新代码。
 
