@@ -58,6 +58,17 @@ sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```
 
+### 遇到 429 Too Many Requests
+
+Docker Hub 按出口 IP 限制匿名拉取，而所有 Cloudflare Workers 共用同一个出口 IP，匿名额度基本一直是 0，匿名拉取 Docker Hub 镜像会返回 `429 toomanyrequests`。用自己的 Docker Hub 账号登录镜像站后，就按个人账号额度计算：
+
+```shell
+docker login docker.fxxk.dedyn.io
+docker pull docker.fxxk.dedyn.io/library/nginx:latest
+```
+
+登录凭据会经过镜像站转发给 Docker Hub，建议使用只读权限的[访问令牌](https://app.docker.com/settings/personal-access-tokens)代替密码，且只登录你信任的镜像站。GHCR、quay.io、registry.k8s.io 等其他仓库不受此限制。
+
 ### 3. 配置常见仓库的镜像加速
 
 #### 3.1 配置
@@ -80,6 +91,8 @@ sudo systemctl restart docker
         [plugins."io.containerd.grpc.v1.cri".registry.mirrors."quay.io"]
           endpoint = ["https://xxxx.xx.com"]
 ```
+
+> Containerd 会在请求上带 `?ns=上游仓库`。为防止 Worker 被当成开放代理，`ns` 只接受 `docker.io` 和 `_worker.js` 中 `ROUTES` 路由表里的上游（quay.io、gcr.io、k8s.gcr.io、registry.k8s.io、ghcr.io、docker.cloudsmith.io、nvcr.io），其他值返回 400。需要别的仓库时，在 `ROUTES` 里加一行即可。
 
 `Podman` 同样支持任意 `registry` 的 `mirror`，修改配置文件 `/etc/containers/registries.conf`，添加配置：
 
@@ -185,7 +198,7 @@ node tests/ghcr-live.mjs
 |--|--|--|--|
 | URL302 | `https://t.me/CMLiussss` |❌| 主页302跳转 |
 | URL | `https://www.baidu.com/` |❌| 主页伪装(设为`nginx`则伪装为nginx默认页面) |
-| UA | `netcraft` |❌| 支持多元素, 元素之间使用空格或换行作间隔 |
+| UA | `netcraft` |❌| 支持多元素, 元素之间使用空格或换行作间隔，不区分大小写 |
 
 # 🛠️ 第三方 DockerHub 镜像服务
 

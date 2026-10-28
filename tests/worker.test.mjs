@@ -1,18 +1,24 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { test } from 'node:test';
+import { readdir, readFile } from 'node:fs/promises';
+import { beforeEach, test } from 'node:test';
 import vm from 'node:vm';
 
 const source = await readFile(new URL('../_worker.js', import.meta.url), 'utf8');
-const { default: worker } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+let worker;
+let loads = 0;
+// Fresh module per test so per-isolate state (caches) cannot leak between tests.
+beforeEach(async () => {
+	({ default: worker } = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${loads++}`).toString('base64')}`));
+});
 const origin = 'https://docker.example.com';
 const repo = 'veildawn/ai-proxy-release';
 const digest = `sha256:${'a'.repeat(64)}`;
-const invoke = (path, init) => worker.fetch(new Request(new URL(path, origin), init), {}, {});
+const docker = { 'User-Agent': 'docker/27.0' };
+const invoke = (path, init, env = {}) => worker.fetch(new Request(new URL(path, origin), init), env, {});
 
 function mockFetch(t, handler) {
 	const original = globalThis.fetch;
-	globalThis.fetch = async (input, init) => handler(new Request(input, init));
+	globalThis.fetch = async (input, init) => handler(new Request(input, init), init);
 	t.after(() => { globalThis.fetch = original; });
 }
 
@@ -136,7 +142,8 @@ test('untrusted redirects are blocked and GHCR failures remain errors', async t 
 	assert.equal(calls, 2);
 	for (const [nextMode, status] of [['denied', 403], ['missing', 404], ['network', 502]]) {
 		mode = nextMode;
-		const response = await invoke(`/v1/search?q=ghcr.io/${repo}:latest`);
+		// A new repository per mode, so a cached token cannot skip the token service.
+		const response = await invoke(`/v1/search?q=ghcr.io/${repo}-${nextMode}:latest`);
 		assert.equal(response.status, status);
 		assert.match((await response.json()).error, /GHCR/);
 	}
@@ -196,4 +203,98 @@ test('generated page scripts execute and display GHCR pull commands without fake
 	const home = await (await invoke('/', { headers: { 'User-Agent': 'Mozilla/5.0' } })).text();
 	new vm.Script(home.match(/<script>([\s\S]*?)<\/script>/)[1]);
 	assert.match(home, /GHCR/);
+});
+
+test('images whose name contains "token" go to the registry, not the auth service', async t => {
+	const calls = [];
+	mockFetch(t, request => { calls.push(new URL(request.url)); return Response.json({}); });
+	await invoke('/v2/someuser/tokenizer/manifests/latest', { headers: { ...docker, Authorization: 'Bearer x' } });
+	assert.deepEqual(calls.map(url => url.href), ['https://registry-1.docker.io/v2/someuser/tokenizer/manifests/latest']);
+});
+
+test('ns and hubhost only select known registries and never proxy arbitrary hosts', async t => {
+	const calls = [];
+	mockFetch(t, request => { calls.push(new URL(request.url).hostname); return Response.json({}); });
+	for (const ua of ['Mozilla/5.0', 'curl/8.0']) {
+		assert.equal((await invoke('/login?ns=evil.example', { headers: { 'User-Agent': ua } })).status, 400);
+	}
+	await invoke('/v2/?hubhost=constructor.example.com', { headers: docker });
+	assert.deepEqual(calls, ['registry-1.docker.io']);
+});
+
+test('UA blocklist is built per request, ignores blank entries and matches any case', async t => {
+	mockFetch(t, () => Response.json({}));
+	const blocked = async (ua, env) => /nginx/.test(await (await invoke('/v2/', { headers: { 'User-Agent': ua } }, env)).text());
+	assert.equal(await blocked('docker/27.0', { UA: ' \n ' }), false);
+	assert.equal(await blocked('EvilBot/1.0', { UA: 'EvilBot' }), true);
+	assert.equal(await blocked('EvilBot/1.0', {}), false);
+	assert.equal(await blocked('netcraft-scanner', {}), true);
+});
+
+test('Docker Hub requests forward client auth and Range without inventing headers', async t => {
+	const seen = [];
+	mockFetch(t, request => { seen.push(request); return Response.json({}); });
+	await invoke('/token?scope=repository%3Ame%2Fprivate%3Apull&service=registry.docker.io', { headers: { ...docker, Authorization: 'Basic dTpw' } });
+	await invoke(`/v2/me/app/blobs/${digest}`, { headers: { ...docker, Authorization: 'Bearer x', Range: 'bytes=0-9' } });
+	assert.equal(seen[0].headers.get('Authorization'), 'Basic dTpw');
+	assert.equal(seen[1].headers.get('Range'), 'bytes=0-9');
+	for (const request of seen) assert.ok(![...request.headers.values()].includes('null'), [...request.headers].join());
+});
+
+test('a failing Docker Hub token service falls back to the registry auth challenge', async t => {
+	mockFetch(t, request => {
+		if (new URL(request.url).hostname === 'auth.docker.io') return new Response('<html>down</html>', { status: 503 });
+		assert.equal(request.headers.get('Authorization'), null);
+		return Response.json({ errors: [] }, { status: 401, headers: { 'Www-Authenticate': 'Bearer realm="https://auth.docker.io/token"' } });
+	});
+	const response = await invoke('/v2/library/nginx/manifests/latest');
+	assert.equal(response.status, 401);
+	assert.equal(response.headers.get('Www-Authenticate'), `Bearer realm="${origin}/token"`);
+});
+
+test('registry bodies are streamed through instead of cloned', async t => {
+	let upstream;
+	mockFetch(t, () => (upstream = new Response('layer-bytes')));
+	const response = await invoke(`/v2/me/app/blobs/${digest}`, { headers: { ...docker, Authorization: 'Bearer x' } });
+	assert.equal(await response.text(), 'layer-bytes');
+	// A clone leaves the upstream half unread, which Workers must buffer in memory.
+	assert.equal(upstream.bodyUsed, true);
+});
+
+test('token scope gets the library/ prefix for official images regardless of parameter order', async t => {
+	const scopes = [];
+	mockFetch(t, request => { scopes.push(new URL(request.url).searchParams.get('scope')); return Response.json({}); });
+	await invoke('/token?scope=repository%3Anginx%3Apull&service=registry.docker.io', { headers: docker });
+	await invoke('/token?service=registry.docker.io&scope=repository%3Anginx%3Apull', { headers: docker });
+	await invoke('/token?scope=repository%3Ame%2Fapp%3Apull&service=registry.docker.io', { headers: docker });
+	assert.deepEqual(scopes, ['repository:library/nginx:pull', 'repository:library/nginx:pull', 'repository:me/app:pull']);
+});
+
+test('upstream fetches only pass options that Workers honours', async t => {
+	const honoured = ['method', 'headers', 'body', 'redirect', 'cf', 'signal'];
+	mockFetch(t, (request, init = {}) => {
+		assert.deepEqual(Object.keys(init).filter(key => !honoured.includes(key)), []);
+		return Response.json({ token: 'docker-token' });
+	});
+	await invoke('/v2/nginx/manifests/latest', { headers: docker });
+	await invoke('/v2/library/nginx/manifests/latest', { headers: { ...docker, Authorization: 'Bearer x' } });
+});
+
+test('no workflow auto-merges upstream code into main', async () => {
+	const dir = new URL('../.github/workflows/', import.meta.url);
+	for (const file of await readdir(dir).catch(() => [])) {
+		assert.doesNotMatch(await readFile(new URL(file, dir), 'utf8'), /Fork-Sync-With-Upstream/, file);
+	}
+});
+
+test('GHCR pull tokens are reused across requests for the same repository', async t => {
+	let tokens = 0;
+	mockFetch(t, request => {
+		if (new URL(request.url).pathname === '/token') return Response.json({ token: `github-token-${++tokens}` });
+		return new Response(null, { headers: { 'Docker-Content-Digest': digest } });
+	});
+	for (let i = 0; i < 3; i++) {
+		assert.equal((await invoke(`/v2/ghcr.io/${repo}/manifests/latest`, { method: 'HEAD' })).status, 200);
+	}
+	assert.equal(tokens, 1);
 });
